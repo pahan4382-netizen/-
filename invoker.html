@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Гайд по Dota 2 для новичков</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Philosopher:wght@400;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#1b1f27; --panel:#242a35; --line:#3a4252; --text:#e9e5d8; --muted:#a9adb8;
+  --radiant:#79b66f; --dire:#d0573f; --gold:#dcae4c; --river:#2d4a5c;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font:18px/1.6 "Source Sans 3",system-ui,sans-serif}
+h1,h2,h3{font-family:Philosopher,Georgia,serif;line-height:1.15;margin:0 0 .5em}
+h1{font-size:clamp(2.4rem,6vw,4rem)}
+h2{font-size:2rem}
+h3{font-size:1.25rem}
+p{margin:0 0 1em;max-width:68ch}
+a{color:var(--gold)}
+:focus-visible{outline:3px solid var(--gold);outline-offset:3px}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+nav{position:sticky;top:0;z-index:5;background:rgba(27,31,39,.94);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;gap:6px 22px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px}
+nav a{color:var(--text);text-decoration:none;font-size:.95rem}
+nav a:hover{color:var(--gold)}
+section{padding:56px 0 8px}
+.hero{padding-top:48px;display:grid;grid-template-columns:1.1fr 1fr;gap:36px;align-items:start}
+.hero .lead{color:var(--muted);font-size:1.15rem}
+.map-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.map-box svg{width:100%;height:auto;display:block}
+.lane{fill:none;stroke:#4a5366;stroke-width:16;stroke-linecap:round}
+.river{stroke:var(--river);stroke-width:14}
+.pos{cursor:pointer}
+.pos circle{fill:var(--panel);stroke:var(--gold);stroke-width:2.5}
+.pos text{fill:var(--text);font:700 15px Philosopher,serif;text-anchor:middle;dominant-baseline:central;pointer-events:none}
+.pos.on circle{fill:var(--gold)}
+.pos.on text{fill:#1b1f27}
+.tabs{display:flex;gap:8px;margin:12px 0}
+.tabs button{flex:1;padding:8px 0;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:6px;font:inherit;cursor:pointer}
+.tabs button[aria-pressed=true]{background:var(--gold);color:#1b1f27;border-color:var(--gold)}
+#posInfo h3{color:var(--gold)}
+#posInfo p{margin:0 0 .6em;font-size:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:6px;padding:14px 16px}
+.card p{margin:0;font-size:1rem;color:var(--muted)}
+.card h3{margin-bottom:.3em}
+.card small{color:var(--gold)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.filters button{padding:6px 14px;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:20px;font:inherit;cursor:pointer}
+.filters button[aria-pressed=true]{background:var(--radiant);color:#16210f;border-color:var(--radiant)}
+.phases{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.phases .card:nth-child(1){border-left-color:var(--radiant)}
+.phases .card:nth-child(3){border-left-color:var(--dire)}
+details{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:10px}
+summary{cursor:pointer;font-weight:600}
+details p{margin:.6em 0 0;font-size:1rem;color:var(--muted)}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 20px;margin:0}
+dt{font-weight:600;color:var(--gold)}
+dd{margin:0;color:var(--muted)}
+footer{margin-top:64px;padding:24px 0;border-top:1px solid var(--line);color:var(--muted);font-size:.9rem}
+@media (max-width:760px){
+  .hero{grid-template-columns:1fr}
+  .phases{grid-template-columns:1fr}
+  dl{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<nav aria-label="Разделы">
+  <div class="wrap">
+    <a href="#start">Начало</a>
+    <a href="#basics">Основы</a>
+    <a href="#heroes">Герои</a>
+    <a href="#items">Предметы</a>
+    <a href="#tips">Советы</a>
+    <a href="#terms">Словарь</a>
+  </div>
+</nav>
+
+<main class="wrap">
+  <section id="start" class="hero">
+    <div>
+      <h1>Dota 2: с чего начать</h1>
+      <p class="lead">Короткий гайд для новичков. Выберите позицию на карте справа и узнайте, что делает игрок на ней.</p>
+      <p>Матч идёт 5 на 5. Две команды, Силы Света (Radiant) и Силы Тьмы (Dire), сражаются за карту и пытаются уничтожить главное здание врага — Древний.</p>
+    </div>
+    <div class="map-box">
+      <svg viewBox="0 0 320 320" role="img" aria-label="Упрощённая карта: три линии и пять позиций команды Radiant">
+        <line class="river" x1="20" y1="20" x2="300" y2="300" opacity=".7"/>
+        <path class="lane" d="M40 280 L40 40 L280 40"/>
+        <path class="lane" d="M40 280 L280 280 L280 40"/>
+        <path class="lane" d="M40 280 L280 40"/>
+        <circle cx="40" cy="280" r="20" fill="var(--radiant)"/>
+        <circle cx="280" cy="40" r="20" fill="var(--dire)"/>
+        <text x="40" y="312" fill="var(--radiant)" text-anchor="middle" font-size="13">Radiant</text>
+        <text x="280" y="22" fill="var(--dire)" text-anchor="middle" font-size="13">Dire</text>
+        <g id="markers"></g>
+      </svg>
+      <div class="tabs" id="tabs" role="group" aria-label="Выбор позиции"></div>
+      <div id="posInfo" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section id="basics">
+    <h2>Как проходит матч</h2>
+    <div class="phases">
+      <div class="card"><h3>Начало</h3><p>Игроки стоят на линиях, добивают крипов и набирают золото и опыт. Главная цель — не умереть и не отстать.</p></div>
+      <div class="card"><h3>Середина</h3><p>Команды ходят по карте, убивают башни, берут Рошана и сражаются в командных боях.</p></div>
+      <div class="card"><h3>Конец</h3><p>Все собрали основные предметы. Одна ошибка в бою может решить игру, поэтому важна дисциплина.</p></div>
+    </div>
+    <p style="margin-top:20px">Золото даёт предметы, опыт даёт уровни и способности. И то и другое вы получаете за крипов, героев и здания. Научитесь добивать крипов (last hit) — это самый важный навык для старта.</p>
+  </section>
+
+  <section id="heroes">
+    <h2>Герои для первых игр</h2>
+    <p>Лучше выучить 2–3 героя, чем метаться между всеми. Эти герои понятны и прощают ошибки.</p>
+    <div class="filters" id="filters" role="group" aria-label="Фильтр героев"></div>
+    <div class="grid" id="heroGrid"></div>
+  </section>
+
+  <section id="items">
+    <h2>Полезные предметы</h2>
+    <p>Характеристики предметов меняются с патчами. Актуальные цифры смотрите в игре.</p>
+    <div class="grid">
+      <div class="card"><h3>Town Portal Scroll</h3><p>Телепортирует к вашему зданию. Берите всегда: он спасает от смерти и помогает вернуться в бой.</p></div>
+      <div class="card"><h3>Boots of Speed</h3><p>Базовые ботинки. Они ускоряют героя и становятся основой для улучшенной обуви.</p></div>
+      <div class="card"><h3>Magic Stick</h3><p>Дёшево восстанавливает здоровье и ману за заряды. Хорош для долгих стычек на линии.</p></div>
+      <div class="card"><h3>Observer Ward</h3><p>Даёт обзор на карте. Вражеского героя видно заранее, а значит, засада не удастся.</p></div>
+      <div class="card"><h3>Blink Dagger</h3><p>Мгновенный короткий прыжок. Им входят в бой и уходят из него.</p></div>
+      <div class="card"><h3>Black King Bar</h3><p>Временно делает героя неуязвимым для большинства заклинаний. Нужен, когда по вам много контроля.</p></div>
+    </div>
+  </section>
+
+  <section id="tips">
+    <h2>Советы новичкам</h2>
+    <details open><summary>Смотрите на миникарту</summary><p>Раз в несколько секунд бросайте взгляд на неё. Если враги исчезли с вашей линии, возможно, они идут к вам.</p></details>
+    <details><summary>Не бросайтесь в бой в одиночку</summary><p>Командный бой выигрывает тот, кто собрался вместе. Одинокий герой в чужом лесу — лёгкая добыча.</p></details>
+    <details><summary>Копите золото разумно</summary><p>Не оставляйте на счёте много золота: оно пропадает при смерти. Покупайте предметы вовремя.</p></details>
+    <details><summary>Не ругайтесь в чате</summary><p>Токсичность проигрывает игры. Лучше сообщить команде информацию: «миссинг мид», «враг без ульты».</p></details>
+    <details><summary>Учитесь на повторах</summary><p>Посмотрите запись своей игры. Найдите моменты, где вы умерли, и подумайте, как избежать их.</p></details>
+  </section>
+
+  <section id="terms">
+    <h2>Словарь</h2>
+    <dl>
+      <dt>Крип</dt><dd>Нейтральные и союзные существа, за убийство которых даётся золото.</dd>
+      <dt>Ласт-хит</dt><dd>Добивание крипа вашим ударом, чтобы получить золото.</dd>
+      <dt>Ганк</dt><dd>Внезапное нападение на героя на другой линии.</dd>
+      <dt>Керри (carry)</dt><dd>Герой, который сильнее всех в поздней игре.</dd>
+      <dt>Саппорт</dt><dd>Герой поддержки, помогающий команде деньгами, обзором и заклинаниями.</dd>
+      <dt>Миссинг</dt><dd>Сообщение «враг пропал с линии».</dd>
+      <dt>Ульта</dt><dd>Самая сильная способность героя.</dd>
+      <dt>Рошан</dt><dd>Мощный нейтральный босс, за которого команда получает ценные награды.</dd>
+    </dl>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Неофициальный фан-гайд. Dota 2 принадлежит Valve.</div>
+</footer>
+
+<script>
+const positions = [
+  {n:1, t:"Керри, безопасная линия", x:120, y:280,
+   p:["Фармит золото и растёт к поздней игре.","Нужен быстрый и ровный фарм, а с врагами лучше драться, когда вы уже сильны."]},
+  {n:2, t:"Центральная линия", x:160, y:160,
+   p:["Один на один против врага. Быстро набирает уровни и забирает руны.","Помогает командам на других линиях ганками."]},
+  {n:3, t:"Тяжёлая линия", x:40, y:120,
+   p:["Крепкий герой, который занимает пространство и начинает бои.","Играет против сильных вражеских героев и срывает их фарм."]},
+  {n:4, t:"Поддержка, мобильная", x:40, y:200,
+   p:["Ходит по карте, устраивает ганки и помогает линиям.","Тратит деньги на предметы для команды и обзор."]},
+  {n:5, t:"Поддержка, полная", x:180, y:280,
+   p:["Защищает керри на линии, ставит варды и покупает ключевые предметы.","Часто жертвует золотом ради команды."]}
+];
+const heroes = [
+  {name:"Juggernaut", role:"Керри", d:"Бьёт по площади, лечит себя и почти не умирает на линии."},
+  {name:"Sven", role:"Керри", d:"Мощный урон в ближнем бою и оглушение."},
+  {name:"Wraith King", role:"Керри", d:"Восстаёт после смерти: ошибки здесь прощаются."},
+  {name:"Sniper", role:"Керри", d:"Стреляет издалека. Тяжело догнать, если держать дистанцию."},
+  {name:"Zeus", role:"Мид", d:"Мощный магический урон и простое управление."},
+  {name:"Viper", role:"Мид", d:"Крепкий герой с ядом. Хорошо чувствует себя на линии."},
+  {name:"Axe", role:"Тяжёлая линия", d:"Притягивает врагов и бьёт по ним. Идеальный вход в бой."},
+  {name:"Tidehunter", role:"Тяжёлая линия", d:"Живучий герой с сильным ультимейтом для командных боёв."},
+  {name:"Crystal Maiden", role:"Поддержка", d:"Замедляет врагов и восстанавливает ману союзникам."},
+  {name:"Lion", role:"Поддержка", d:"Оглушает и накладывает превращение. Хорош в ганках."},
+  {name:"Ogre Magi", role:"Поддержка", d:"Много здоровья и оглушения. Подходит для новичков."},
+  {name:"Dazzle", role:"Поддержка", d:"Лечит и защищает союзников от смерти."}
+];
+
+/* карта и позиции */
+const ns="http://www.w3.org/2000/svg";
+const markers=document.getElementById("markers");
+const tabs=document.getElementById("tabs");
+const info=document.getElementById("posInfo");
+function selectPos(i){
+  positions.forEach((p,k)=>{
+    p.g.classList.toggle("on",k===i);
+    p.b.setAttribute("aria-pressed",k===i);
+  });
+  const p=positions[i];
+  info.innerHTML="<h3>Позиция "+p.n+": "+p.t+"</h3>"+p.p.map(s=>"<p>"+s+"</p>").join("");
+}
+positions.forEach((p,i)=>{
+  const g=document.createElementNS(ns,"g");
+  g.setAttribute("class","pos");
+  g.innerHTML='<circle cx="'+p.x+'" cy="'+p.y+'" r="15"/><text x="'+p.x+'" y="'+p.y+'">'+p.n+'</text>';
+  g.addEventListener("click",()=>selectPos(i));
+  markers.appendChild(g);
+  p.g=g;
+  const b=document.createElement("button");
+  b.textContent=p.n;
+  b.setAttribute("aria-label","Позиция "+p.n+": "+p.t);
+  b.addEventListener("click",()=>selectPos(i));
+  tabs.appendChild(b);
+  p.b=b;
+});
+selectPos(0);
+
+/* герои */
+const roles=["Все"].concat([...new Set(heroes.map(h=>h.role))]);
+const filters=document.getElementById("filters");
+const grid=document.getElementById("heroGrid");
+function showHeroes(role){
+  [...filters.children].forEach(b=>b.setAttribute("aria-pressed",b.textContent===role));
+  grid.innerHTML=heroes.filter(h=>role==="Все"||h.role===role)
+    .map(h=>'<div class="card"><h3>'+h.name+'</h3><small>'+h.role+'</small><p>'+h.d+'</p></div>').join("");
+}
+roles.forEach(r=>{
+  const b=document.createElement("button");
+  b.textContent=r;
+  b.addEventListener("click",()=>showHeroes(r));
+  filters.appendChild(b);
+});
+showHeroes("Все");
+</script>
+</body>
+</html>
