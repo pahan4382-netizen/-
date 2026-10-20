@@ -1,0 +1,1070 @@
+import base64
+import difflib
+import io
+import json
+import math
+import os
+import re
+import subprocess
+import threading
+import time
+import tkinter as tk
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+from tkinter import messagebox
+
+import pyttsx3
+import speech_recognition as sr
+
+try:
+    import pyautogui   # управление браузером: клавиши, прокрутка, громкость, скриншоты
+except Exception:
+    pyautogui = None
+
+# ---------------- Настройки ----------------
+
+# Слова активации (распознавание может писать имя по-разному)
+WAKE_WORDS = ("джарвис", "jarvis", "жарвис", "дарвис", "джервис", "джарвиз")
+
+# Программы без ярлыка: название -> путь к .exe или команда
+COMMANDS = {
+    "блокнот": "notepad.exe",
+    "калькулятор": "calc.exe",
+    "телеграмм": "unigram.exe",
+}
+
+# Слова, которые не получается угадать автоматически
+ALIASES = {
+    "стим": "steam",
+    "хром": "chrome",
+    "фотошоп": "photoshop",
+    "юниграм": "unigram",
+    "телеграм": "unigram",
+    "телеграмм": "unigram",
+}
+
+# Сайты: слово -> ссылка ({date} подставится как сегодняшняя дата)
+SITES = {
+    "ютуб": "https://youtube.com",
+    "youtube": "https://youtube.com",
+    "гитхаб": "https://github.com",
+    "github": "https://github.com",
+    "клод": "https://claude.ai/new",
+    "вк видео": "https://vkvideo.ru",
+    "макс": "https://web.max.ru",
+    "литкод": "https://leetcode.com/problemset/",
+    "дневник": "https://school.mos.ru/diary/schedules/day?date={date}",
+}
+
+TRIGGERS = ("открой", "запусти", "зайди на", "включи", "открой мне", "а ну ка")
+
+# Фразы, с которых начинаются вопросы к ИИ
+AI_PREFIXES = (
+    "спроси", "расскажи", "объясни", "что такое", "кто такой", "кто такая",
+    "почему", "зачем", "как работает", "сколько", "посчитай", "переведи",
+    "напиши", "придумай", "ответь", "подскажи", "посоветуй", "реши",
+)
+
+SEARCH_DIRS = [
+    Path.home() / "Desktop",
+    Path.home() / "Documents",
+    Path.home() / "Downloads",
+    Path.home() / "Music",
+]
+
+SHORTCUT_DIRS = [
+    Path(os.environ.get("PROGRAMDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+    Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+    Path.home() / "Desktop",
+    Path(os.environ.get("PUBLIC", "")) / "Desktop",
+]
+
+LOG_FILE = Path.home() / "jarvis_error.log"
+SETTINGS_FILE = Path.home() / "jarvis_settings.json"
+
+TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+HELP_TEXT = (
+    "Скажите «эй Джарвис» и назовите команду:\n\n"
+    "• открой ютуб, открой гитхаб: сайты\n"
+    "• открой телеграм, запусти стим: программы\n"
+    "• открой файл отчёт: поиск файла или папки\n"
+    "• найди в ютубе котиков / найди в гугле погоду\n"
+    "• включи видео про котов (сразу запустит ролик)\n"
+    "• пауза, продолжи, на весь экран, громче, тише\n"
+    "• следующая вкладка, закрой вкладку, прокрути вниз\n"
+    "• скажи время, обнови программы, выключись\n\n"
+    "Команды с ИИ:\n"
+    "• расскажи / объясни / что такое ... : любой вопрос\n"
+    "• что на экране : ИИ посмотрит на скриншот\n"
+    "• объясни буфер обмена / переведи буфер : работа со скопированным текстом\n"
+    "• забудь разговор : сбросить память диалога\n"
+    "• любая непонятная фраза тоже уходит ИИ\n\n"
+    "Можно не говорить «Джарвис»: нажмите на микрофон.\n"
+    "Проблемы со слухом: правый клик по окну -> «Микрофон»."
+)
+
+# ---------------- Настройки пользователя (сохраняются в файл) ----------------
+
+
+def load_settings():
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_settings():
+    try:
+        SETTINGS_FILE.write_text(json.dumps(SETTINGS, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+SETTINGS = load_settings()   # например {"mic_index": 2}
+
+
+def log(text=None):
+    """Дописывает ошибку в лог (а не затирает старые)."""
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write("\n[%s]\n%s\n" % (datetime.now().strftime("%d.%m %H:%M:%S"),
+                                  text or traceback.format_exc()))
+
+
+# ---------------- Настройки ИИ ----------------
+# Всё задаётся переменными окружения, ключи в код писать не нужно.
+#
+#  Вариант 1 (по умолчанию) - Anthropic Claude:
+#      ANTHROPIC_API_KEY=sk-ant-...
+#  Вариант 2 - OpenAI или любой OpenAI-совместимый сервер:
+#      JARVIS_AI=openai
+#      OPENAI_API_KEY=sk-...
+#  Вариант 3 - бесплатно и локально через Ollama (https://ollama.com):
+#      JARVIS_AI=openai
+#      JARVIS_AI_URL=http://localhost:11434/v1/chat/completions
+#      JARVIS_AI_MODEL=llama3.1        (для экрана нужна модель с «зрением», например llava)
+
+AI_PROVIDER = os.environ.get("JARVIS_AI", "anthropic").lower()
+if AI_PROVIDER == "anthropic":
+    AI_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+    AI_URL = os.environ.get("JARVIS_AI_URL", "https://api.anthropic.com/v1/messages")
+    AI_MODEL = os.environ.get("JARVIS_AI_MODEL", "claude-sonnet-5-5")
+else:
+    AI_KEY = os.environ.get("OPENAI_API_KEY", "")
+    AI_URL = os.environ.get("JARVIS_AI_URL", "https://api.openai.com/v1/chat/completions")
+    AI_MODEL = os.environ.get("JARVIS_AI_MODEL", "gpt-4o-mini")
+
+AI_ENABLED = bool(AI_KEY) or "localhost" in AI_URL or "127.0.0.1" in AI_URL
+AI_MAX_HISTORY = 10   # сколько последних реплик помнить
+
+AI_SYSTEM = (
+    "Ты Джарвис, голосовой помощник на компьютере. Твои ответы будут зачитываться вслух. "
+    "Отвечай по-русски, коротко: одно-три предложения. Никакого markdown, списков, "
+    "эмодзи и ссылок. Числа и формулы проговаривай словами. Обращайся к пользователю "
+    "«сэр», но без чрезмерной услужливости. Если фраза выглядит как неверно распознанная "
+    "речь, переспроси. Сегодня {date}."
+)
+
+HISTORY = []   # память диалога: [{"role": "user"/"assistant", "content": "..."}]
+
+# Состояние помощника, которое показывает окно:
+# idle - ждёт слово активации, listening - слушает команду, thinking - думает ИИ,
+# speaking - говорит, error - что-то пошло не так
+STATE = {
+    "mode": "idle", "quit": False, "manual": False, "reload": False,
+    "reload_mic": False, "calibrate": False, "mic_test": False,
+    "net_error": False, "last_answer": "",
+}
+
+engine = None
+recognizer = sr.Recognizer()
+APP_INDEX = {}
+
+# ---------------- Микрофон ----------------
+# Главные причины «не расслышал» в старом коде:
+#  1. микрофон открывался заново на каждую фразу и подстраивался под шум
+#     0.3 секунды: первые слова обрезались, а порог мог выставиться слишком высоким;
+#  2. пока помощник говорил, голос из колонок копился в буфере и мешал;
+#  3. слово «Джарвис» искалось только по точному совпадению.
+# Теперь микрофон открыт постоянно, калибруется один раз, буфер очищается,
+# а имя ищется «нечётко».
+
+recognizer.dynamic_energy_threshold = True          # порог сам подстраивается
+recognizer.dynamic_energy_adjustment_damping = 0.10
+recognizer.dynamic_energy_ratio = 1.4
+recognizer.pause_threshold = 0.8                    # пауза, после которой фраза считается законченной
+recognizer.non_speaking_duration = 0.5              # тишина по краям записи
+recognizer.phrase_threshold = 0.25                  # минимальная длина речи
+
+MAX_ENERGY = 1000000000000000000000000000     # потолок порога: выше микрофон становится «глухим»
+MIN_ENERGY = 1
+
+MIC = {"obj": None, "source": None}
+
+
+def close_mic():
+    if MIC["obj"] is not None:
+        try:
+            MIC["obj"].__exit__(None, None, None)
+        except Exception:
+            pass
+    MIC["obj"] = MIC["source"] = None
+
+
+def calibrate():
+    """Замеряет шум в комнате (нужна тишина около секунды)."""
+    recognizer.adjust_for_ambient_noise(MIC["source"], duration=1.0)
+    recognizer.energy_threshold = min(max(recognizer.energy_threshold, MIN_ENERGY), MAX_ENERGY)
+    print("Порог чувствительности:", int(recognizer.energy_threshold))
+
+
+def open_mic():
+    close_mic()
+    obj = sr.Microphone(device_index=SETTINGS.get("mic_index"))
+    MIC["source"] = obj.__enter__()
+    MIC["obj"] = obj
+    calibrate()
+
+
+def flush_mic():
+    """Выбрасывает накопленный звук (например, голос самого помощника)."""
+    try:
+        stream = MIC["source"].stream.pyaudio_stream
+        available = stream.get_read_available()
+        if available:
+            stream.read(available, exception_on_overflow=False)
+    except Exception:
+        pass
+
+
+def recognize(audio):
+    """Возвращает список вариантов распознавания (лучший первым)."""
+    try:
+        result = recognizer.recognize_google(audio, language="ru-RU", show_all=True)
+    except sr.RequestError:
+        STATE["net_error"] = True
+        time.sleep(20)
+        return []
+    except sr.UnknownValueError:
+        return []
+    if not isinstance(result, dict):
+        return []
+    variants = [a["transcript"].lower() for a in result.get("alternative", [])
+                if a.get("transcript")]
+    if variants:
+        STATE["net_error"] = False
+        print("Вы:", variants[0])
+    return variants
+
+
+def listen(timeout=None, limit=8):
+    """Слушает микрофон. Возвращает список вариантов текста (пустой, если тишина)."""
+    flush_mic()
+    try:
+        audio = recognizer.listen(MIC["source"], timeout=timeout, phrase_time_limit=limit)
+    except sr.WaitTimeoutError:
+        return []
+    return recognize(audio)
+
+
+def find_wake(variants):
+    """Ищет слово активации (с учётом неточного распознавания).
+    Возвращает (команда после имени, текст) или None."""
+    for text in variants:
+        words = text.split()
+        for i, raw in enumerate(words):
+            w = raw.strip(",.!?-—")
+            if len(w) < 4:
+                continue
+            if w in WAKE_WORDS or difflib.get_close_matches(w, WAKE_WORDS, n=1, cutoff=0.78):
+                return " ".join(words[i + 1:]).strip(" ,.!"), text
+    return None
+
+
+# ---------------- Голос ----------------
+
+
+def speak(text):
+    print("Помощник:", text)
+    STATE["mode"] = "speaking"
+    engine.say(text)
+    engine.runAndWait()
+    STATE["mode"] = "idle"
+
+
+# ---------------- ИИ ----------------
+
+
+def clean_answer(text):
+    """Убирает разметку, которую нельзя читать вслух."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"[*_`#>|]", "", text)
+    text = re.sub(r"https?://\S+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def ai_ask(text, image=None):
+    """Отправляет вопрос модели и возвращает текстовый ответ. image - PNG в байтах."""
+    system = AI_SYSTEM.format(date=datetime.now().strftime("%d.%m.%Y"))
+    b64 = base64.b64encode(image).decode() if image else None
+
+    if AI_PROVIDER == "anthropic":
+        content = text
+        if b64:
+            content = [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": "image/png", "data": b64}},
+                {"type": "text", "text": text},
+            ]
+        body = {"model": AI_MODEL, "max_tokens": 400, "system": system,
+                "messages": HISTORY + [{"role": "user", "content": content}]}
+        headers = {"x-api-key": AI_KEY, "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
+    else:
+        content = text
+        if b64:
+            content = [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+            ]
+        body = {"model": AI_MODEL, "max_tokens": 400,
+                "messages": [{"role": "system", "content": system}] + HISTORY
+                            + [{"role": "user", "content": content}]}
+        headers = {"Authorization": "Bearer " + AI_KEY, "Content-Type": "application/json"}
+
+    req = urllib.request.Request(AI_URL, json.dumps(body).encode("utf-8"), headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    if AI_PROVIDER == "anthropic":
+        answer = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
+    else:
+        answer = data["choices"][0]["message"]["content"]
+    answer = clean_answer(answer)
+
+    # в память кладём только текст (скриншоты не храним)
+    HISTORY.append({"role": "user", "content": text})
+    HISTORY.append({"role": "assistant", "content": answer})
+    del HISTORY[:-AI_MAX_HISTORY]
+    return answer
+
+
+def ai_answer(text, image=None):
+    """Спрашивает ИИ и озвучивает ответ."""
+    if not AI_ENABLED:
+        speak("ИИ не настроен. Задайте ключ в переменной окружения, подробности в коде")
+        return
+    STATE["mode"] = "thinking"
+    try:
+        answer = ai_ask(text, image)
+    except urllib.error.HTTPError as e:
+        log("AI HTTP %s: %s" % (e.code, e.read().decode("utf-8", "ignore")))
+        speak("Сервер ИИ вернул ошибку %s" % e.code)
+        return
+    except Exception:
+        log()
+        speak("Не получилось связаться с ИИ")
+        return
+    STATE["last_answer"] = answer
+    speak(answer or "ИИ ничего не ответил")
+
+
+def screenshot_png():
+    img = pyautogui.screenshot()
+    img.thumbnail((1280, 1280))   # меньше картинка: быстрее и дешевле
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def get_clipboard():
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"],
+        capture_output=True, text=True, encoding="utf-8", timeout=10,
+        creationflags=0x08000000,
+    )
+    return result.stdout.strip()
+
+
+def ask_about_screen(text):
+    if pyautogui is None:
+        speak("Для скриншотов установите pyautogui")
+        return
+    speak("Смотрю на экран")
+    try:
+        image = screenshot_png()
+    except Exception:
+        log()
+        speak("Не получилось сделать снимок экрана")
+        return
+    ai_answer("Посмотри на скриншот экрана и ответь на просьбу: " + text, image=image)
+
+
+def ask_about_clipboard(text):
+    try:
+        clip = get_clipboard()
+    except Exception:
+        log()
+        clip = ""
+    if not clip:
+        speak("Буфер обмена пуст")
+        return
+    task = re.sub(r"(?:из |в )?буфер\w*(?: обмена)?", "", text).strip(" ,.")
+    task = task or "кратко перескажи"
+    ai_answer("%s. Вот текст:\n\n%s" % (task, clip[:6000]))
+
+
+# ---------------- Приложения ----------------
+
+
+def translit(text):
+    return "".join(TRANSLIT.get(ch, ch) for ch in text)
+
+
+def build_app_index():
+    """Собирает все приложения: название -> (тип, что запускать)."""
+    index = {}
+
+    # Все приложения из «Пуска», включая Microsoft Store
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+             "Get-StartApps | ConvertTo-Json"],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+            creationflags=0x08000000,  # не показывать окно PowerShell
+        )
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            data = [data]
+        for app in data:
+            index[app["Name"].lower()] = ("appid", app["AppID"])
+    except Exception:
+        pass
+
+    # Ярлыки из «Пуска» и с рабочего стола
+    for folder in SHORTCUT_DIRS:
+        if folder.exists():
+            for lnk in folder.rglob("*.lnk"):
+                index.setdefault(lnk.stem.lower(), ("file", str(lnk)))
+
+    return index
+
+
+def find_app(name):
+    name = ALIASES.get(name, name)
+    for candidate in (name, translit(name)):
+        # точное совпадение
+        if candidate in APP_INDEX:
+            return APP_INDEX[candidate]
+        # слово входит в название
+        if len(candidate) >= 3:
+            found = [key for key in APP_INDEX if candidate in key]
+            if found:
+                return APP_INDEX[min(found, key=len)]
+        # похожее название (порог защищает от случайных совпадений)
+        close = difflib.get_close_matches(candidate, APP_INDEX.keys(), n=1, cutoff=0.75)
+        if close:
+            return APP_INDEX[close[0]]
+    return None
+
+
+def launch_app(name):
+    command = COMMANDS.get(name)
+    if command:
+        try:
+            subprocess.Popen(command)
+            return True
+        except FileNotFoundError:
+            pass  # exe не найден в PATH, ищем среди установленных программ
+
+    app = find_app(name)
+    if not app:
+        return False
+
+    kind, target = app
+    if kind == "appid":
+        subprocess.Popen(["explorer", "shell:AppsFolder\\" + target])
+    else:
+        os.startfile(target)
+    return True
+
+
+def open_site(name):
+    for key, url in SITES.items():
+        if key in name:
+            date = datetime.now().strftime("%d-%m-%Y")
+            webbrowser.open(url.format(date=date))
+            return True
+    return False
+
+
+def find_file(name):
+    for folder in SEARCH_DIRS:
+        for root, dirs, files in os.walk(folder):
+            for item in files + dirs:
+                if name in item.lower():
+                    return os.path.join(root, item)
+    return None
+
+
+def get_name(text, words):
+    # длинные фразы убираем первыми: «открой мне» раньше, чем «открой»
+    for word in sorted(words, key=len, reverse=True):
+        text = text.replace(word, "")
+    return text.strip()
+
+
+# ---------------- Браузер ----------------
+
+# Где искать: слово после «в/на» -> (название, адрес поиска)
+SEARCH_SITES = {
+    "ютуб": ("YouTube", "https://www.youtube.com/results?search_query={q}"),
+    "ютюб": ("YouTube", "https://www.youtube.com/results?search_query={q}"),
+    "youtube": ("YouTube", "https://www.youtube.com/results?search_query={q}"),
+    "гугл": ("Google", "https://www.google.com/search?q={q}"),
+    "google": ("Google", "https://www.google.com/search?q={q}"),
+    "яндекс": ("Яндекс", "https://yandex.ru/search/?text={q}"),
+    "гитхаб": ("GitHub", "https://github.com/search?q={q}"),
+    "github": ("GitHub", "https://github.com/search?q={q}"),
+    "википед": ("Википедия", "https://ru.wikipedia.org/w/index.php?search={q}"),
+}
+GOOGLE = SEARCH_SITES["гугл"]
+
+
+def press(*keys, times=1):
+    """Нажимает клавишу или сочетание в активном окне (то есть в браузере)."""
+    if len(keys) > 1:
+        pyautogui.hotkey(*keys)
+    else:
+        pyautogui.press(keys[0], presses=times)
+
+
+# Голосовые команды управления браузером: фразы -> действие
+CONTROLS = [
+    (("пауза", "на паузу", "продолжи", "продолжай"), lambda: press("k")),
+    (("на весь экран", "полный экран", "полноэкранный"), lambda: press("f")),
+    (("следующее видео",), lambda: press("shift", "n")),
+    (("перемотай вперёд", "перемотай вперед"), lambda: press("l")),
+    (("перемотай назад",), lambda: press("j")),
+    (("следующая вкладка", "следующую вкладку"), lambda: press("ctrl", "tab")),
+    (("предыдущая вкладка", "предыдущую вкладку"), lambda: press("ctrl", "shift", "tab")),
+    (("новая вкладка", "новую вкладку"), lambda: press("ctrl", "t")),
+    (("закрой вкладку", "закрой эту вкладку"), lambda: press("ctrl", "w")),
+    (("обнови страницу", "перезагрузи страницу"), lambda: press("f5")),
+    (("вернись назад",), lambda: press("alt", "left")),
+    (("прокрути вниз", "листай вниз", "пролистай вниз"), lambda: pyautogui.scroll(-700)),
+    (("прокрути вверх", "листай вверх", "пролистай вверх"), lambda: pyautogui.scroll(700)),
+    (("громче", "прибавь звук"), lambda: press("volumeup", times=5)),
+    (("тише", "убавь звук"), lambda: press("volumedown", times=5)),
+    (("без звука", "выключи звук"), lambda: press("volumemute")),
+]
+
+
+def parse_search(text):
+    """«найди в ютубе котики» -> (сайт, ссылка, запрос). Без сайта ищет в Google."""
+    m = re.search(r"\b(?:найди|поищи|ищи|загугли)\s+(.*)", text)
+    if not m:
+        return None
+    rest = m.group(1).strip()
+    site, template = GOOGLE
+    m2 = re.match(r"(?:мне\s+)?(?:в|на)\s+(\S+)\s*(.*)", rest)
+    if m2:
+        word = m2.group(1)
+        if word.startswith(("интернет", "сети")):
+            rest = m2.group(2)
+        else:
+            for key, (name, url) in SEARCH_SITES.items():
+                if word.startswith(key):
+                    site, template, rest = name, url, m2.group(2)
+                    break
+    rest = re.sub(r"^(?:видео|ролики|ролик|видос)\s+", "", rest.strip()).strip()
+    rest = re.sub(r"^про\s+", "", rest)  # «видео про котов» -> «котов»
+    if not rest:
+        return None
+    return site, template.format(q=urllib.parse.quote_plus(rest)), rest
+
+
+def parse_play(text):
+    """«включи видео про котов» или «включи на ютубе X» -> запрос для YouTube."""
+    m = re.search(
+        r"\b(?:включи|поставь|запусти)\s+(?:мне\s+)?"
+        r"(?:(?:в|на)\s+ютуб\w*\s+|(?:видео|ролик|клип|песню|музыку|трек)\s+)(.+)",
+        text,
+    )
+    return re.sub(r"^про\s+", "", m.group(1).strip()) if m else None
+
+
+def first_youtube_video(query):
+    """Находит первое видео по запросу. Если не вышло, возвращает None."""
+    try:
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+        })
+        html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "ignore")
+        m = (re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})"', html)
+             or re.search(r'"videoId":"([\w-]{11})"', html))
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def browser_control(text):
+    """Выполняет команду управления браузером. Возвращает True, если нашла."""
+    for phrases, action in CONTROLS:
+        if any(p in text for p in phrases):
+            if pyautogui is None:
+                speak("Для управления браузером установите pyautogui")
+            else:
+                action()
+                speak("Готово")
+            return True
+    return False
+
+
+# ---------------- Команды ----------------
+
+
+def handle(text):
+    """Выполняет команду. Возвращает False, если нужно выключиться."""
+    global APP_INDEX
+
+    play = parse_play(text)      # «включи видео ...»
+    search = parse_search(text)  # «найди в ютубе ...»
+
+    if len(text.split()) <= 4 and ("время" in text or "времени" in text
+                                   or "который час" in text):
+        speak("Сейчас " + datetime.now().strftime("%H:%M"))
+
+    elif "обнови программы" in text:
+        APP_INDEX = build_app_index()
+        speak("Список программ обновлён")
+
+    elif any(p in text for p in ("забудь разговор", "сбрось диалог", "новый диалог")):
+        HISTORY.clear()
+        speak("Диалог сброшен")
+
+    elif any(p in text for p in ("на экране", "посмотри на экран", "что я вижу")):
+        ask_about_screen(text)
+
+    elif "буфер" in text:
+        ask_about_clipboard(text)
+
+    elif play:
+        speak("Включаю " + play)
+        video = first_youtube_video(play)
+        if video:
+            webbrowser.open("https://www.youtube.com/watch?v=" + video)
+        else:  # не получилось найти ролик: открываем результаты поиска
+            webbrowser.open(SEARCH_SITES["ютуб"][1].format(q=urllib.parse.quote_plus(play)))
+
+    elif search:
+        site, url, query = search
+        speak("Ищу " + query)
+        webbrowser.open(url)
+
+    elif browser_control(text):
+        pass  # команда выполнена внутри browser_control
+
+    elif "открой файл" in text or "открой папку" in text:
+        name = get_name(text, ("открой файл", "открой папку"))
+        path = find_file(name)
+        if path:
+            speak("Открываю " + name)
+            os.startfile(path)
+        else:
+            speak("Не нашёл " + name)
+
+    # вопросы к ИИ проверяем раньше TRIGGERS: в «расскажи, как включить»
+    # есть слово «включи», но открывать ничего не нужно
+    elif text.startswith(AI_PREFIXES):
+        ai_answer(text.replace("спроси", "", 1).strip() or text)
+
+    elif any(word in text for word in TRIGGERS):
+        name = get_name(text, TRIGGERS)
+        if open_site(name) or launch_app(name):
+            speak("Открываю " + name)
+        else:
+            speak("Не нашёл программу " + name)
+
+    elif "выключись" in text or "выход" in text:
+        speak("До связи, сэр")
+        return False
+
+    elif AI_ENABLED:
+        ai_answer(text)  # непонятная фраза: пусть разбирается ИИ
+
+    else:
+        speak("Я не понял команду")
+
+    return True
+
+
+# ---------------- Работа помощника (в отдельном потоке) ----------------
+
+
+def service_requests():
+    """Обрабатывает просьбы из меню окна."""
+    global APP_INDEX
+
+    if STATE["reload"]:
+        STATE["reload"] = False
+        APP_INDEX = build_app_index()
+        speak("Список программ обновлён")
+
+    if STATE["reload_mic"]:
+        STATE["reload_mic"] = False
+        try:
+            open_mic()
+            speak("Микрофон переключён")
+        except Exception:
+            log()
+            STATE["mode"] = "error"
+            time.sleep(2)
+            STATE["mode"] = "idle"
+
+    if STATE["calibrate"]:
+        STATE["calibrate"] = False
+        STATE["mode"] = "listening"
+        calibrate()
+        speak("Микрофон настроен")
+
+    if STATE["mic_test"]:
+        STATE["mic_test"] = False
+        speak("Скажите что-нибудь")
+        STATE["mode"] = "listening"
+        variants = listen(timeout=5, limit=6)
+        if variants:
+            speak("Я услышал: " + variants[0])
+        else:
+            speak("Ничего не услышал. Порог чувствительности %d" % recognizer.energy_threshold)
+
+
+def assistant():
+    global engine, APP_INDEX
+    try:
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()  # нужно для голоса в отдельном потоке
+        except ImportError:
+            pass
+
+        engine = pyttsx3.init()
+        APP_INDEX = build_app_index()
+        open_mic()   # открываем и калибруем до приветствия, пока вокруг тихо
+        speak("Приветствую вас, сэр")
+        last_net_warning = 0
+
+        while not STATE["quit"]:
+            service_requests()
+
+            variants = listen(timeout=2, limit=10)
+
+            if STATE["net_error"] and time.time() - last_net_warning > 60:
+                last_net_warning = time.time()
+                speak("Нет связи с сервисом распознавания речи. Проверьте интернет")
+
+            manual = STATE["manual"]  # нажали на микрофон
+            STATE["manual"] = False
+            found = find_wake(variants)
+            if not found and not manual:
+                if STATE["mode"] == "listening":
+                    STATE["mode"] = "idle"
+                continue
+
+            # Команда может прозвучать сразу: «эй джарвис, открой ютуб»
+            command = found[0] if found else ""
+            if not command:
+                speak("Слушаю, сэр")
+                STATE["mode"] = "listening"
+                for attempt in range(2):   # даём вторую попытку
+                    variants = listen(timeout=6, limit=12)
+                    if variants:
+                        command = variants[0]
+                        break
+                    if attempt == 0:
+                        speak("Повторите, пожалуйста")
+                        STATE["mode"] = "listening"
+                if not command:
+                    STATE["mode"] = "idle"
+                    speak("Не расслышал")
+                    continue
+
+            STATE["mode"] = "listening"
+            try:
+                if not handle(command):
+                    break
+            except Exception:
+                log()
+                STATE["mode"] = "error"
+                time.sleep(2)
+                STATE["mode"] = "idle"
+    except Exception:
+        log()
+        STATE["mode"] = "error"  # красный микрофон: смотрите jarvis_error.log
+        return
+    finally:
+        close_mic()
+
+    STATE["quit"] = True
+
+
+# ---------------- Окно ----------------
+
+W, H = 200, 126          # размер окна
+MIC_POS = (100, 82)      # центр кнопки микрофона
+MIC_R = 27               # её радиус
+TRANS = "#010203"        # этот цвет окно делает прозрачным
+
+# Тема окна: "classic" - сине-зелёная, как окно голосового ввода Windows,
+# "dark" - тёмная версия того же окна
+THEME = "classic"
+
+THEMES = {
+    "classic": {
+        "top": "#0a94be", "bottom": "#11a66c", "border": "#0c86a8", "icon": "#ffffff",
+        "btn": "#2aa9a2", "btn_active": "#51b8b3", "ring_idle": "#3eb1aa",
+        "colors": {"idle": "#ffffff", "listening": "#ffffff", "thinking": "#c9e8ff",
+                   "speaking": "#ffe08a", "error": "#ff6b5e"},
+    },
+    "dark": {
+        "top": "#112733", "bottom": "#0e2a22", "border": "#28424f", "icon": "#9fb8c6",
+        "btn": "#1a323d", "btn_active": "#1f3b49", "ring_idle": "#2f4856",
+        "colors": {"idle": "#9fb8c6", "listening": "#19d3ff", "thinking": "#b58cff",
+                   "speaking": "#f2b84b", "error": "#ff5d4f"},
+    },
+}
+T = THEMES[THEME]
+TOP, BOTTOM, BORDER, ICON = T["top"], T["bottom"], T["border"], T["icon"]
+COLORS = T["colors"]  # цвета состояний: ждёт, слушает, думает, говорит, ошибка
+
+
+def mix(c1, c2, k):
+    """Смешивает два цвета: k=0 даёт c1, k=1 даёт c2."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * k) for x, y in zip(a, b))
+
+
+def list_input_devices():
+    """Список (номер, название) устройств, которые умеют записывать звук."""
+    devices = []
+    try:
+        import pyaudio
+        pa = pyaudio.PyAudio()
+        try:
+            for i in range(pa.get_device_count()):
+                info = pa.get_device_info_by_index(i)
+                if info.get("maxInputChannels", 0) > 0:
+                    devices.append((i, info["name"]))
+        finally:
+            pa.terminate()
+    except Exception:
+        pass
+    return devices
+
+
+class MicWidget:
+    RADIUS = 12  # скругление углов
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Jarvis")
+        self.root.overrideredirect(True)           # без рамки
+        self.root.attributes("-topmost", True)     # поверх всех окон
+        try:
+            self.root.attributes("-transparentcolor", TRANS)
+        except tk.TclError:
+            pass
+        self.root.configure(bg=TRANS)
+
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry("%dx%d+%d+%d" % (W, H, (sw - W) // 2, (sh - H) // 2))  # по центру экрана
+
+        self.canvas = tk.Canvas(self.root, width=W, height=H, bg=TRANS, highlightthickness=0)
+        self.canvas.pack()
+        self.draw_panel()
+
+        self.t = 0
+        self.dx = self.dy = 0
+        self.dragging = False
+
+        self.top_var = tk.BooleanVar(value=True)
+        self.menu = tk.Menu(self.root, tearoff=0)
+
+        # подменю выбора микрофона
+        mic_menu = tk.Menu(self.menu, tearoff=0)
+        mic_menu.add_command(label="Проверить, что слышно",
+                             command=lambda: STATE.update(mic_test=True))
+        mic_menu.add_command(label="Перенастроить на шум",
+                             command=lambda: STATE.update(calibrate=True))
+        mic_menu.add_separator()
+        mic_menu.add_command(label="Устройство по умолчанию", command=lambda: self.set_mic(None))
+        for index, name in list_input_devices():
+            mic_menu.add_command(label="%d: %s" % (index, name[:45]),
+                                 command=lambda i=index: self.set_mic(i))
+        self.menu.add_cascade(label="Микрофон", menu=mic_menu)
+
+        self.menu.add_command(label="Последний ответ ИИ", command=self.show_last_answer)
+        self.menu.add_command(label="Сбросить память ИИ", command=HISTORY.clear)
+        self.menu.add_command(label="Обновить список программ",
+                              command=lambda: STATE.update(reload=True))
+        self.menu.add_command(label="Открыть файл ошибок", command=self.open_log)
+        self.menu.add_checkbutton(label="Поверх всех окон", variable=self.top_var,
+                                  command=self.toggle_top)
+        self.menu.add_separator()
+        self.menu.add_command(label="Выход", command=self.close)
+
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "dragging", False))
+        self.canvas.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+
+        self.animate()
+
+    # --- фон панели: градиент со скруглёнными углами ---
+    def draw_panel(self):
+        c, r = self.canvas, self.RADIUS
+        for y in range(H):
+            yy = y + 0.5
+            if yy < r:
+                inset = r - math.sqrt(r * r - (r - yy) ** 2)
+            elif yy > H - r:
+                inset = r - math.sqrt(r * r - (yy - (H - r)) ** 2)
+            else:
+                inset = 0
+            x0, x1 = round(inset), W - round(inset)
+            c.create_line(x0, y, x1, y, fill=BORDER)
+            if 0 < y < H - 1:
+                c.create_line(x0 + 1, y, x1 - 1, y, fill=mix(TOP, BOTTOM, y / H))
+        # разделитель под верхней полосой
+        c.create_line(1, 40, W - 1, 40, fill=mix(BORDER, TOP, 0.4))
+
+    # --- кнопки ---
+    def on_press(self, e):
+        x, y = e.x, e.y
+        if y < 40 and x > W - 34:                       # крестик
+            self.close()
+        elif math.hypot(x - MIC_POS[0], y - MIC_POS[1]) <= MIC_R + 3:   # микрофон
+            STATE["manual"] = True
+            if STATE["mode"] == "idle":
+                STATE["mode"] = "listening"
+        elif abs(x - 32) <= 18 and 62 <= y <= 102:      # шестерёнка
+            self.menu.tk_popup(e.x_root, e.y_root)
+        elif abs(x - 168) <= 18 and 62 <= y <= 102:     # вопрос
+            messagebox.showinfo("Jarvis", HELP_TEXT, parent=self.root)
+        else:                                           # остальное: тянем окно
+            self.dragging = True
+            self.dx, self.dy = x, y
+
+    def on_drag(self, e):
+        if self.dragging:
+            x = self.root.winfo_x() + e.x - self.dx
+            y = self.root.winfo_y() + e.y - self.dy
+            self.root.geometry("+%d+%d" % (x, y))
+
+    def toggle_top(self):
+        self.root.attributes("-topmost", self.top_var.get())
+
+    def set_mic(self, index):
+        SETTINGS["mic_index"] = index
+        save_settings()
+        STATE["reload_mic"] = True
+
+    def show_last_answer(self):
+        messagebox.showinfo("Jarvis", STATE["last_answer"] or "Ответов ещё не было.",
+                            parent=self.root)
+
+    def open_log(self):
+        if LOG_FILE.exists():
+            os.startfile(LOG_FILE)
+        else:
+            messagebox.showinfo("Jarvis", "Ошибок нет.", parent=self.root)
+
+    def close(self):
+        STATE["quit"] = True
+        self.root.destroy()
+
+    # --- анимация ---
+    def animate(self):
+        if STATE["quit"]:
+            self.root.destroy()
+            return
+
+        mode = STATE["mode"]
+        color = COLORS.get(mode, COLORS["idle"])
+        c = self.canvas
+        c.delete("dyn")
+        mx, my = MIC_POS
+        self.t += 1
+
+        # верхняя полоса: ручка и крестик
+        c.create_line(W // 2 - 20, 20, W // 2 + 20, 20, width=3, capstyle="round",
+                      fill=ICON, tags="dyn")
+        c.create_line(W - 29, 14, W - 19, 24, width=2, fill=ICON, tags="dyn")
+        c.create_line(W - 29, 24, W - 19, 14, width=2, fill=ICON, tags="dyn")
+
+        # шестерёнка слева
+        gx, gy = 32, my
+        for k in range(8):
+            a = k * math.pi / 4
+            c.create_line(gx + 6 * math.cos(a), gy + 6 * math.sin(a),
+                          gx + 10 * math.cos(a), gy + 10 * math.sin(a),
+                          width=3, fill=ICON, tags="dyn")
+        c.create_oval(gx - 7, gy - 7, gx + 7, gy + 7, outline=ICON, width=2, tags="dyn")
+        c.create_oval(gx - 2.5, gy - 2.5, gx + 2.5, gy + 2.5, outline=ICON, width=2, tags="dyn")
+
+        # вопрос справа
+        qx, qy = 168, my
+        c.create_oval(qx - 10, qy - 10, qx + 10, qy + 10, outline=ICON, width=2, tags="dyn")
+        c.create_text(qx, qy, text="?", fill=ICON, font=("Segoe UI", 11, "bold"), tags="dyn")
+
+        # кольца вокруг микрофона
+        if mode == "idle":
+            pulse = (math.sin(self.t / 25) + 1) / 2
+            r = MIC_R + 3 + 1.5 * pulse
+            c.create_oval(mx - r, my - r, mx + r, my + r,
+                          outline=mix(color, mix(TOP, BOTTOM, 0.65), 0.6), width=2, tags="dyn")
+        else:
+            speed = 18 if mode == "thinking" else 30   # при раздумьях кольца бегут быстрее
+            for i in range(2):
+                phase = ((self.t / speed) + i * 0.5) % 1
+                r = MIC_R + 2 + 11 * phase
+                c.create_oval(mx - r, my - r, mx + r, my + r,
+                              outline=mix(color, mix(TOP, BOTTOM, 0.65), phase), width=2, tags="dyn")
+
+        # кнопка микрофона
+        ring = T["ring_idle"] if mode == "idle" else color
+        c.create_oval(mx - MIC_R, my - MIC_R, mx + MIC_R, my + MIC_R,
+                      fill=T["btn"] if mode == "idle" else T["btn_active"], outline=ring, width=2, tags="dyn")
+        mic = ICON if mode == "idle" else color
+        c.create_line(mx, my - 9, mx, my - 2, width=11, capstyle="round", fill=mic, tags="dyn")
+        c.create_arc(mx - 10, my - 12, mx + 10, my + 8, start=180, extent=180,
+                     style="arc", width=2, outline=mic, tags="dyn")
+        c.create_line(mx, my + 8, mx, my + 13, width=2, fill=mic, tags="dyn")
+        c.create_line(mx - 5, my + 13, mx + 5, my + 13, width=2, capstyle="round",
+                      fill=mic, tags="dyn")
+
+        self.root.after(40, self.animate)
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    threading.Thread(target=assistant, daemon=True).start()
+    MicWidget().run()
