@@ -8,7 +8,6 @@ import re
 import subprocess
 import threading
 import time
-import tkinter as tk
 import traceback
 import urllib.error
 import urllib.parse
@@ -16,10 +15,17 @@ import urllib.request
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
 
 import pyttsx3
 import speech_recognition as sr
+
+import sys
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
+from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QLinearGradient, QRadialGradient
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QLabel,
+    QMenu, QMessageBox, QFrame, QSizePolicy
+)
 
 try:
     import pyautogui   # управление браузером: клавиши, прокрутка, громкость, скриншоты
@@ -825,10 +831,10 @@ def assistant():
 
 # ---------------- Окно ----------------
 
-W, H = 200, 126          # размер окна
+W, H = 200, 125          # размер окна
 MIC_POS = (100, 82)      # центр кнопки микрофона
 MIC_R = 27               # её радиус
-TRANS = "#010203"        # этот цвет окно делает прозрачным
+TRANS = "#FF0000"        # этот цвет окно делает прозрачным
 
 # Тема окна: "classic" - сине-зелёная, как окно голосового ввода Windows,
 # "dark" - тёмная версия того же окна
@@ -836,8 +842,8 @@ THEME = "classic"
 
 THEMES = {
     "classic": {
-        "top": "#0a94be", "bottom": "#11a66c", "border": "#0c86a8", "icon": "#ffffff",
-        "btn": "#2aa9a2", "btn_active": "#51b8b3", "ring_idle": "#3eb1aa",
+        "top": "#000000", "bottom": "#ffffff", "border": "#595b5c", "icon": "#ffffff",
+        "btn": "#070707", "btn_active": "#f1f5f5", "ring_idle": "#424343",
         "colors": {"idle": "#ffffff", "listening": "#ffffff", "thinking": "#c9e8ff",
                    "speaking": "#ffe08a", "error": "#ff6b5e"},
     },
@@ -878,107 +884,241 @@ def list_input_devices():
     return devices
 
 
-class MicWidget:
-    RADIUS = 12  # скругление углов
+class VisualCanvas(QWidget):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+
+    def paintEvent(self, event):
+        self.owner.paint_visual(event)
+
+
+class MicWidget(QWidget):
+    """Современное окно Jarvis на PySide6. Анимация микрофона сохранена."""
 
     def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("Jarvis")
-        self.root.overrideredirect(True)           # без рамки
-        self.root.attributes("-topmost", True)     # поверх всех окон
-        try:
-            self.root.attributes("-transparentcolor", TRANS)
-        except tk.TclError:
-            pass
-        self.root.configure(bg=TRANS)
-
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry("%dx%d+%d+%d" % (W, H, (sw - W) // 2, (sh - H) // 2))  # по центру экрана
-
-        self.canvas = tk.Canvas(self.root, width=W, height=H, bg=TRANS, highlightthickness=0)
-        self.canvas.pack()
-        self.draw_panel()
-
+        super().__init__()
+        self.setWindowTitle("Jarvis")
+        self.setFixedSize(390, 300)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.t = 0
-        self.dx = self.dy = 0
-        self.dragging = False
+        self.drag_pos = None
+        self.topmost = True
 
-        self.top_var = tk.BooleanVar(value=True)
-        self.menu = tk.Menu(self.root, tearoff=0)
+        self.setStyleSheet("""
+            QWidget { color: #e8f1ff; font-family: 'Segoe UI', Arial; }
+            QPushButton {
+                background-color: #17243a; color: #dce8ff;
+                font-size: 13px; font-weight: 600;
+                border: 1px solid #2c4264; border-radius: 11px;
+                padding: 9px 13px;
+            }
+            QPushButton:hover { background-color: #263b5c; border-color: #6c8ed1; }
+            QPushButton:pressed { background-color: #101a2b; }
+            QPushButton#closeButton { background: transparent; border: none; font-size: 17px; padding: 3px; }
+            QPushButton#closeButton:hover { background: #713e50; }
+            QPushButton#micButton {
+                background-color: #202f4b; border: 1px solid #526fa5;
+                border-radius: 16px; padding: 10px 18px; font-size: 13px;
+            }
+            QPushButton#micButton:hover { background-color: #2c4267; }
+        """)
 
-        # подменю выбора микрофона
-        mic_menu = tk.Menu(self.menu, tearoff=0)
-        mic_menu.add_command(label="Проверить, что слышно",
-                             command=lambda: STATE.update(mic_test=True))
-        mic_menu.add_command(label="Перенастроить на шум",
-                             command=lambda: STATE.update(calibrate=True))
-        mic_menu.add_separator()
-        mic_menu.add_command(label="Устройство по умолчанию", command=lambda: self.set_mic(None))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 15, 20, 17)
+        root.setSpacing(7)
+
+        header = QHBoxLayout()
+        title = QLabel("J A R V I S")
+        title.setStyleSheet("font-size: 15px; font-weight: 800; letter-spacing: 2px; color: #dce8ff;")
+        self.status = QLabel("VOICE INTERFACE  •  READY")
+        self.status.setStyleSheet("font-size: 9px; color: #7894bc; letter-spacing: 1px;")
+        close_btn = QPushButton("×")
+        close_btn.setObjectName("closeButton")
+        close_btn.setFixedSize(30, 28)
+        close_btn.clicked.connect(self.close_app)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(close_btn)
+        root.addLayout(header)
+
+        self.canvas = VisualCanvas(self)
+        self.canvas.setMinimumHeight(174)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        root.addWidget(self.canvas, 1)
+
+        self.state_label = QLabel("ОЖИДАНИЕ КОМАНДЫ")
+        self.state_label.setAlignment(Qt.AlignCenter)
+        self.state_label.setStyleSheet("font-size: 10px; font-weight: 700; letter-spacing: 2px; color: #91a9ce;")
+        root.addWidget(self.state_label)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(9)
+        self.settings_btn = QPushButton("⚙  Настройки")
+        self.settings_btn.clicked.connect(self.show_menu)
+        help_btn = QPushButton("?  Помощь")
+        help_btn.clicked.connect(self.show_help)
+        buttons.addWidget(self.settings_btn)
+        buttons.addWidget(help_btn)
+        root.addLayout(buttons)
+
+        self.menu = QMenu(self)
+        self.menu.setStyleSheet("""
+            QMenu { background: #111c2d; color: #e8f1ff; border: 1px solid #344968; padding: 5px; }
+            QMenu::item { padding: 7px 24px; border-radius: 5px; }
+            QMenu::item:selected { background: #293f61; }
+            QMenu::separator { height: 1px; background: #344968; margin: 4px 8px; }
+        """)
+        mic_menu = self.menu.addMenu("Микрофон")
+        mic_menu.addAction("Проверить, что слышно", lambda: STATE.update(mic_test=True))
+        mic_menu.addAction("Перенастроить на шум", lambda: STATE.update(calibrate=True))
+        mic_menu.addSeparator()
+        mic_menu.addAction("Устройство по умолчанию", lambda: self.set_mic(None))
         for index, name in list_input_devices():
-            mic_menu.add_command(label="%d: %s" % (index, name[:45]),
-                                 command=lambda i=index: self.set_mic(i))
-        self.menu.add_cascade(label="Микрофон", menu=mic_menu)
+            mic_menu.addAction(f"{index}: {name[:45]}", lambda checked=False, i=index: self.set_mic(i))
+        self.menu.addAction("Последний ответ ИИ", self.show_last_answer)
+        self.menu.addAction("Сбросить память ИИ", HISTORY.clear)
+        self.menu.addAction("Обновить список программ", lambda: STATE.update(reload=True))
+        self.menu.addAction("Открыть файл ошибок", self.open_log)
+        self.top_action = self.menu.addAction("Поверх всех окон")
+        self.top_action.setCheckable(True)
+        self.top_action.setChecked(True)
+        self.top_action.toggled.connect(self.toggle_top)
+        self.menu.addSeparator()
+        self.menu.addAction("Выход", self.close_app)
 
-        self.menu.add_command(label="Последний ответ ИИ", command=self.show_last_answer)
-        self.menu.add_command(label="Сбросить память ИИ", command=HISTORY.clear)
-        self.menu.add_command(label="Обновить список программ",
-                              command=lambda: STATE.update(reload=True))
-        self.menu.add_command(label="Открыть файл ошибок", command=self.open_log)
-        self.menu.add_checkbutton(label="Поверх всех окон", variable=self.top_var,
-                                  command=self.toggle_top)
-        self.menu.add_separator()
-        self.menu.add_command(label="Выход", command=self.close)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(40)
+        self.show()
 
-        self.canvas.bind("<ButtonPress-1>", self.on_press)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "dragging", False))
-        self.canvas.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+    def mode_color(self, mode):
+        return {
+            "idle": QColor("#7c9dce"),
+            "listening": QColor("#3de5d0"),
+            "thinking": QColor("#a78bfa"),
+            "speaking": QColor("#ffc66d"),
+            "error": QColor("#ff647c"),
+        }.get(mode, QColor("#7c9dce"))
 
-        self.animate()
+    def paint_visual(self, event):
+        p = QPainter(self.canvas)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.canvas.width(), self.canvas.height()
+        mode = STATE.get("mode", "idle")
+        accent = self.mode_color(mode)
 
-    # --- фон панели: градиент со скруглёнными углами ---
-    def draw_panel(self):
-        c, r = self.canvas, self.RADIUS
-        for y in range(H):
-            yy = y + 0.5
-            if yy < r:
-                inset = r - math.sqrt(r * r - (r - yy) ** 2)
-            elif yy > H - r:
-                inset = r - math.sqrt(r * r - (yy - (H - r)) ** 2)
-            else:
-                inset = 0
-            x0, x1 = round(inset), W - round(inset)
-            c.create_line(x0, y, x1, y, fill=BORDER)
-            if 0 < y < H - 1:
-                c.create_line(x0 + 1, y, x1 - 1, y, fill=mix(TOP, BOTTOM, y / H))
-        # разделитель под верхней полосой
-        c.create_line(1, 40, W - 1, 40, fill=mix(BORDER, TOP, 0.4))
+        # Мягкий фон сцены и тонкая рамка.
+        bg = QLinearGradient(0, 0, w, h)
+        bg.setColorAt(0, QColor("#14243a"))
+        bg.setColorAt(1, QColor("#0b1322"))
+        p.setPen(QPen(QColor("#263b58"), 1))
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(1, 1, w - 2, h - 2, 18, 18)
 
-    # --- кнопки ---
-    def on_press(self, e):
-        x, y = e.x, e.y
-        if y < 40 and x > W - 34:                       # крестик
+        cx, cy = w / 2, h / 2 + 1
+        # Анимированные кольца — сохранены и усилены визуально.
+        if mode == "idle":
+            pulse = (math.sin(self.t / 12) + 1) / 2
+            rings = [(43 + pulse * 3, 100 - int(pulse * 25))]
+        else:
+            rings = []
+            for i in range(3):
+                phase = ((self.t / (27 if mode == "thinking" else 38)) + i / 3) % 1
+                rings.append((35 + phase * 33, int(150 * (1 - phase))))
+        for radius, alpha in rings:
+            color = QColor(accent)
+            color.setAlpha(max(15, alpha))
+            p.setPen(QPen(color, 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # Центральная кнопка с мягким свечением.
+        glow = QRadialGradient(cx, cy, 47)
+        glow.setColorAt(0, QColor(accent.red(), accent.green(), accent.blue(), 45))
+        glow.setColorAt(1, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(QPointF(cx, cy), 47, 47)
+        p.setPen(QPen(accent, 1.6))
+        p.setBrush(QColor("#172840"))
+        p.drawEllipse(QPointF(cx, cy), 31, 31)
+
+        # Значок микрофона.
+        p.setPen(Qt.NoPen)
+        p.setBrush(accent)
+        p.drawRoundedRect(QRectF(cx - 5, cy - 17, 10, 22), 5, 5)
+        p.setPen(QPen(accent, 2.2, Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(int(cx - 12), int(cy - 11), 24, 24, 180 * 16, 180 * 16)
+        p.drawLine(QPointF(cx, cy + 13), QPointF(cx, cy + 19))
+        p.drawLine(QPointF(cx - 7, cy + 19), QPointF(cx + 7, cy + 19))
+
+        # Небольшие декоративные индикаторы по бокам.
+        p.setPen(QPen(QColor("#344d70"), 1))
+        p.drawLine(22, 25, 48, 25)
+        p.drawLine(w - 48, 25, w - 22, 25)
+        p.setPen(QColor("#7894bc"))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(20, h - 13, "MIC  /  ACTIVE" if mode != "idle" else "MIC  /  STANDBY")
+        p.drawText(w - 83, h - 13, f"SYS  {self.t % 100:02d}")
+        p.end()
+
+    def animate(self):
+        if STATE.get("quit"):
+            self.timer.stop()
             self.close()
-        elif math.hypot(x - MIC_POS[0], y - MIC_POS[1]) <= MIC_R + 3:   # микрофон
-            STATE["manual"] = True
-            if STATE["mode"] == "idle":
-                STATE["mode"] = "listening"
-        elif abs(x - 32) <= 18 and 62 <= y <= 102:      # шестерёнка
-            self.menu.tk_popup(e.x_root, e.y_root)
-        elif abs(x - 168) <= 18 and 62 <= y <= 102:     # вопрос
-            messagebox.showinfo("Jarvis", HELP_TEXT, parent=self.root)
-        else:                                           # остальное: тянем окно
-            self.dragging = True
-            self.dx, self.dy = x, y
+            return
+        self.t += 1
+        mode = STATE.get("mode", "idle")
+        labels = {
+            "idle": ("ОЖИДАНИЕ КОМАНДЫ", "VOICE INTERFACE  •  READY"),
+            "listening": ("СЛУШАЮ ВАС…", "VOICE INTERFACE  •  LISTENING"),
+            "thinking": ("ОБРАБАТЫВАЮ ЗАПРОС…", "VOICE INTERFACE  •  THINKING"),
+            "speaking": ("ОТВЕЧАЮ…", "VOICE INTERFACE  •  SPEAKING"),
+            "error": ("ПРОИЗОШЛА ОШИБКА", "VOICE INTERFACE  •  ATTENTION"),
+        }
+        label, header = labels.get(mode, labels["idle"])
+        self.state_label.setText(label)
+        self.status.setText(header)
+        self.state_label.setStyleSheet(f"font-size: 10px; font-weight: 700; letter-spacing: 2px; color: {self.mode_color(mode).name()};")
+        self.canvas.update()
 
-    def on_drag(self, e):
-        if self.dragging:
-            x = self.root.winfo_x() + e.x - self.dx
-            y = self.root.winfo_y() + e.y - self.dy
-            self.root.geometry("+%d+%d" % (x, y))
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            # Клик по области сцены активирует ручное прослушивание.
+            pos = event.position().toPoint()
+            scene_pos = self.canvas.mapFrom(self, pos)
+            if self.canvas.geometry().contains(pos):
+                center = QPointF(self.canvas.width() / 2, self.canvas.height() / 2 + 1)
+                if math.hypot(scene_pos.x() - center.x(), scene_pos.y() - center.y()) < 43:
+                    STATE["manual"] = True
+                    if STATE.get("mode") == "idle":
+                        STATE["mode"] = "listening"
+                    return
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            self.show_menu()
 
-    def toggle_top(self):
-        self.root.attributes("-topmost", self.top_var.get())
+    def mouseMoveEvent(self, event):
+        if self.drag_pos is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self.drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.drag_pos = None
+
+    def show_menu(self):
+        self.menu.exec(self.settings_btn.mapToGlobal(QPointF(0, self.settings_btn.height()).toPoint()))
+
+    def show_help(self):
+        QMessageBox.information(self, "Jarvis — помощь", HELP_TEXT)
+
+    def toggle_top(self, enabled):
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        self.show()
 
     def set_mic(self, index):
         SETTINGS["mic_index"] = index
@@ -986,85 +1126,30 @@ class MicWidget:
         STATE["reload_mic"] = True
 
     def show_last_answer(self):
-        messagebox.showinfo("Jarvis", STATE["last_answer"] or "Ответов ещё не было.",
-                            parent=self.root)
+        QMessageBox.information(self, "Jarvis — последний ответ", STATE.get("last_answer") or "Ответов ещё не было.")
 
     def open_log(self):
         if LOG_FILE.exists():
-            os.startfile(LOG_FILE)
+            try:
+                os.startfile(LOG_FILE)
+            except Exception as exc:
+                QMessageBox.warning(self, "Jarvis", f"Не удалось открыть файл ошибок: {exc}")
         else:
-            messagebox.showinfo("Jarvis", "Ошибок нет.", parent=self.root)
+            QMessageBox.information(self, "Jarvis", "Ошибок нет.")
 
-    def close(self):
+    def close_app(self):
         STATE["quit"] = True
-        self.root.destroy()
+        self.close()
 
-    # --- анимация ---
-    def animate(self):
-        if STATE["quit"]:
-            self.root.destroy()
-            return
-
-        mode = STATE["mode"]
-        color = COLORS.get(mode, COLORS["idle"])
-        c = self.canvas
-        c.delete("dyn")
-        mx, my = MIC_POS
-        self.t += 1
-
-        # верхняя полоса: ручка и крестик
-        c.create_line(W // 2 - 20, 20, W // 2 + 20, 20, width=3, capstyle="round",
-                      fill=ICON, tags="dyn")
-        c.create_line(W - 29, 14, W - 19, 24, width=2, fill=ICON, tags="dyn")
-        c.create_line(W - 29, 24, W - 19, 14, width=2, fill=ICON, tags="dyn")
-
-        # шестерёнка слева
-        gx, gy = 32, my
-        for k in range(8):
-            a = k * math.pi / 4
-            c.create_line(gx + 6 * math.cos(a), gy + 6 * math.sin(a),
-                          gx + 10 * math.cos(a), gy + 10 * math.sin(a),
-                          width=3, fill=ICON, tags="dyn")
-        c.create_oval(gx - 7, gy - 7, gx + 7, gy + 7, outline=ICON, width=2, tags="dyn")
-        c.create_oval(gx - 2.5, gy - 2.5, gx + 2.5, gy + 2.5, outline=ICON, width=2, tags="dyn")
-
-        # вопрос справа
-        qx, qy = 168, my
-        c.create_oval(qx - 10, qy - 10, qx + 10, qy + 10, outline=ICON, width=2, tags="dyn")
-        c.create_text(qx, qy, text="?", fill=ICON, font=("Segoe UI", 11, "bold"), tags="dyn")
-
-        # кольца вокруг микрофона
-        if mode == "idle":
-            pulse = (math.sin(self.t / 25) + 1) / 2
-            r = MIC_R + 3 + 1.5 * pulse
-            c.create_oval(mx - r, my - r, mx + r, my + r,
-                          outline=mix(color, mix(TOP, BOTTOM, 0.65), 0.6), width=2, tags="dyn")
-        else:
-            speed = 18 if mode == "thinking" else 30   # при раздумьях кольца бегут быстрее
-            for i in range(2):
-                phase = ((self.t / speed) + i * 0.5) % 1
-                r = MIC_R + 2 + 11 * phase
-                c.create_oval(mx - r, my - r, mx + r, my + r,
-                              outline=mix(color, mix(TOP, BOTTOM, 0.65), phase), width=2, tags="dyn")
-
-        # кнопка микрофона
-        ring = T["ring_idle"] if mode == "idle" else color
-        c.create_oval(mx - MIC_R, my - MIC_R, mx + MIC_R, my + MIC_R,
-                      fill=T["btn"] if mode == "idle" else T["btn_active"], outline=ring, width=2, tags="dyn")
-        mic = ICON if mode == "idle" else color
-        c.create_line(mx, my - 9, mx, my - 2, width=11, capstyle="round", fill=mic, tags="dyn")
-        c.create_arc(mx - 10, my - 12, mx + 10, my + 8, start=180, extent=180,
-                     style="arc", width=2, outline=mic, tags="dyn")
-        c.create_line(mx, my + 8, mx, my + 13, width=2, fill=mic, tags="dyn")
-        c.create_line(mx - 5, my + 13, mx + 5, my + 13, width=2, capstyle="round",
-                      fill=mic, tags="dyn")
-
-        self.root.after(40, self.animate)
-
-    def run(self):
-        self.root.mainloop()
+    def closeEvent(self, event):
+        self.timer.stop()
+        STATE["quit"] = True
+        event.accept()
 
 
 if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setApplicationName("Jarvis")
     threading.Thread(target=assistant, daemon=True).start()
-    MicWidget().run()
+    window = MicWidget()
+    sys.exit(app.exec())
